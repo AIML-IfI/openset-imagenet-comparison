@@ -17,7 +17,7 @@ class EntropicOpensetLoss:
         categorical_targets = tools.device(torch.zeros(logits.shape))
         unk_idx = target < 0
         kn_idx = ~unk_idx
-        # check if there is known samples in the batch
+
         if torch.any(kn_idx):
             categorical_targets[kn_idx, :] = self.eye[target[kn_idx]]
 
@@ -29,7 +29,7 @@ class EntropicOpensetLoss:
         return self.cross_entropy(logits, categorical_targets)
 
 
-class AverageMeter(object):
+class AverageMeter():
     """ Computes and stores the average and current value. Taken from
     https://github.com/pytorch/examples/tree/master/imagenet
     """
@@ -60,10 +60,9 @@ class AverageMeter(object):
         return f"{self.avg:3.3f}"
 
 
-# Taken from:
-# https://github.com/Lance0218/Pytorch-DistributedDataParallel-Training-Tricks/
 class EarlyStopping:
-    """ Stops the training if validation loss/metrics doesn't improve after a given patience"""
+    """ Stops the training if validation loss/metrics doesn't improve after a given patience.
+    Taken from: https://github.com/Lance0218/Pytorch-DistributedDataParallel-Training-Tricks/"""
     def __init__(self, patience=100, delta=0):
         """
         Args:
