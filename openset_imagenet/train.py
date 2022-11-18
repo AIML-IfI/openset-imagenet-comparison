@@ -13,11 +13,12 @@ from torchvision import transforms
 from vast.tools import set_device_gpu, set_device_cpu, device
 import vast
 from loguru import logger
-from .metrics import confidence, auc_score_binary, auc_score_multiclass
+import tqdm
+from .metrics import confidence
 from .dataset import ImagenetDataset
 from .model import ResNet50
 from .losses import AverageMeter, EarlyStopping, EntropicOpensetLoss
-import tqdm
+from .perturbations import decay_epsilon, Noise, fgsm_attack
 
 
 def set_seeds(seed):
@@ -31,7 +32,6 @@ def set_seeds(seed):
     np.random.seed(seed)
     # torch.backends.cudnn.deterministic = True
     # torch.backends.cudnn.benchmark = False
-
 
 
 def save_checkpoint(f_name, model, epoch, opt, best_score_, scheduler=None):
@@ -69,12 +69,11 @@ def load_checkpoint(model, checkpoint, opt=None, scheduler=None):
         model (torch nn.module): Requires a model to load the state dictionary.
         checkpoint (Path): File path.
         opt (torch optimizer): An optimizer to load the state dictionary. Defaults to None.
-        device (str): Device to load the checkpoint. Defaults to 'cpu'.
         scheduler (torch lr_scheduler): Learning rate scheduler. Defaults to None.
     """
     file_path = pathlib.Path(checkpoint)
     if file_path.is_file():  # First check if file exists
-#        breakpoint()
+        # breakpoint()
         checkpoint = torch.load(file_path, map_location=vast.tools._device)
         key = list(checkpoint["model_state_dict"].keys())[0]
         # If module was saved as DistributedDataParallel then removes the world "module"
@@ -97,46 +96,105 @@ def load_checkpoint(model, checkpoint, opt=None, scheduler=None):
         start_epoch = checkpoint["epoch"]
         best_score = checkpoint["best_score"]
         return start_epoch, best_score
-    else:
-        raise Exception(f"Checkpoint file '{checkpoint}' not found")
+    raise Exception(f"Checkpoint file '{checkpoint}' not found")
 
 
-def train(model, data_loader, optimizer, loss_fn, trackers, cfg):
-    """ Main training loop.
+def train(model, data_loader, optimizer, loss_fn, trackers, cfg, noise_gen=None):
+    """Main training loop."""
 
-    Args:
-        model (torch.model): Model
-        data_loader (torch.DataLoader): DataLoader
-        optimizer (torch optimizer): optimizer
-        loss_fn: Loss function
-        trackers: Dictionary of trackers
-        cfg: General configuration structure
-    """
     # Reset dictionary of training metrics
     for metric in trackers.values():
         metric.reset()
 
-    j = None
+    j, j_kn, j_neg = None, None, None
 
-    # training loop
-    if not cfg.parallel:
-        data_loader = tqdm.tqdm(data_loader)
+    # Calculate label of perturbed negatives
+    if cfg.loss.type == 'garbage' and cfg.adv.clean_neg:
+        negative_label = data_loader.dataset.unique_classes[-1]
+    elif cfg.loss.type == 'garbage' and not cfg.adv.clean_neg:
+        negative_label = data_loader.dataset.unique_classes[-1]+1
+    else:
+        negative_label = -1
+
     for images, labels in data_loader:
         model.train()  # To collect batch-norm statistics
         batch_len = labels.shape[0]  # Samples in current batch
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         images = device(images)
         labels = device(labels)
 
-        # Forward pass
-        logits, features = model(images)
+        # If the gradient with respect to the input is needed
+        if cfg.adv.who == 'fgsm':
+            images.requires_grad_()
+            images.grad = None
 
-        # Calculate loss
-        j = loss_fn(logits, labels)
-        trackers["j"].update(j.item(), batch_len)
+        # Forward pass
+        logits, _ = model(images)
+
+        # Separate positives from negatives to keep track of separated losses
+        if cfg.loss.type == 'entropic':
+            kn_idx = labels >= 0
+            neg_idx = ~kn_idx
+            if torch.all(kn_idx):       # only knowns
+                j = loss_fn(logits, labels)
+                trackers['j_kn'].update(j.item(), batch_len)
+            elif torch.all(neg_idx):    # only negatives
+                j = loss_fn(logits, labels)
+                trackers['j_neg'].update(j.item(), batch_len)
+            else:                       # both known and negatives
+                j_kn = loss_fn(logits[kn_idx], labels[kn_idx])
+                j_neg = loss_fn(logits[neg_idx], labels[neg_idx])
+                j = j_kn + j_neg
+                trackers['j_kn'].update(j_kn.item(), batch_len)
+                trackers['j_neg'].update(j_neg.item(), batch_len)
+        else:
+            j = loss_fn(logits, labels)
+            trackers['j'].update(j.item(), batch_len)
+
         # Backward pass
         j.backward()
-        optimizer.step()
+
+        if cfg.adv.who == 'no_adv':
+            optimizer.step()
+        else:
+            # Steps: Select samples to perturb, create perturbed samples
+            # calculate loss of perturbed samples, backward pass
+            model.eval()  # Stop batch normalisation statistics
+
+            # Get the candidates to adversarial samples
+            num_corr_samples = None
+            correct_idx = None
+
+            if cfg.adv.mode == 'filter':  # Perturb corrected classified samples
+                correct_idx = filter_correct(logits, labels, cfg.threshold, negative_label)
+                num_corr_samples = len(correct_idx[0])
+            elif cfg.adv.mode == 'full':  # Perturb all samples
+                correct_idx = torch.arange(batch_len, device=vast.tools._device)
+                num_corr_samples = batch_len
+            trackers['n_pert'].update(num_corr_samples)
+            # Create perturbed samples
+            if num_corr_samples > 0:
+                im_corr = images[correct_idx]
+
+                if cfg.adv.who == 'fgsm':
+                    im_corr_grad = images.grad[correct_idx]
+                    im_pert, label_pert = fgsm_attack(clean_im=im_corr,
+                                                      epsilon=cfg.adv.epsilon,
+                                                      grad=im_corr_grad,
+                                                      negs_label=negative_label,
+                                                      device=vast.tools._device)
+                else:
+                    im_pert = noise_gen.perturb(clean_im=im_corr)
+                    label_pert = noise_gen.get_labels(shape=im_corr.shape[0],
+                                                      device=vast.tools._device,
+                                                      negs_label=negative_label)
+
+                # forward pass with perturbed samples
+                logits, _ = model(im_pert)
+                j_pert = loss_fn(logits, label_pert)
+                trackers['j_pert'].update(j_pert.item(), num_corr_samples)
+                j_pert.backward()
+            optimizer.step()
 
 
 def validate(model, data_loader, loss_fn, n_classes, trackers, cfg):
@@ -162,7 +220,6 @@ def validate(model, data_loader, loss_fn, n_classes, trackers, cfg):
         unknown_class = -1
         last_valid_class = None
 
-
     model.eval()
     with torch.no_grad():
         data_len = len(data_loader.dataset)  # size of dataset
@@ -173,11 +230,28 @@ def validate(model, data_loader, loss_fn, n_classes, trackers, cfg):
             batch_len = labels.shape[0]  # current batch size, last batch has different value
             images = device(images)
             labels = device(labels)
-            logits, features = model(images)
+            logits, _ = model(images)
             scores = torch.nn.functional.softmax(logits, dim=1)
 
-            j = loss_fn(logits, labels)
-            trackers["j"].update(j.item(), batch_len)
+            # Separate positive from negative to keep track of the loss
+            if cfg.loss.type == 'entropic':
+                kn_idx = labels >= 0
+                neg_idx = ~kn_idx
+                if torch.all(kn_idx):  # only knowns
+                    j = loss_fn(logits, labels)
+                    trackers['j_kn'].update(j.item(), batch_len)
+                elif torch.all(neg_idx):  # only negatives
+                    j = loss_fn(logits, labels)
+                    trackers['j_neg'].update(j.item(), batch_len)
+                else:  # both known and negatives
+                    j_kn = loss_fn(logits[kn_idx], labels[kn_idx])
+                    j_neg = loss_fn(logits[neg_idx], labels[neg_idx])
+                    j = j_kn + j_neg
+                    trackers['j_kn'].update(j_kn.item(), batch_len)
+                    trackers['j_neg'].update(j_neg.item(), batch_len)
+            else:
+                j = loss_fn(logits, labels)
+                trackers['j'].update(j.item(), batch_len)
 
             # accumulate partial results in empty tensors
             start_ix = i * cfg.batch_size
@@ -188,13 +262,50 @@ def validate(model, data_loader, loss_fn, n_classes, trackers, cfg):
             scores=all_scores,
             target_labels=all_targets,
             offset=min_unk_score,
-            unknown_class = unknown_class,
-            last_valid_class = last_valid_class)
+            unknown_class=unknown_class,
+            last_valid_class=last_valid_class)
         if kn_count:
             trackers["conf_kn"].update(kn_conf, kn_count)
         if neg_count:
             trackers["conf_unk"].update(neg_conf, neg_count)
 
+
+def predict(scores, threshold, neg_label=-1):
+    """ Returns predicted score and label based on the softmax scores. When score < threshold, the
+    sample is labeled as unk_label.
+
+    Args:
+        scores: Softmax scores of all classes and samples in batch.
+        threshold: Minimum score to classify as a known sample.
+        neg_label: Label reserved for negatives samples.
+
+    Returns:
+        Tuple with predicted class and score.
+    """
+    with torch.no_grad():
+        pred_score, pred_class = torch.max(scores, dim=1)
+        unk = pred_score < threshold
+        pred_class[unk] = neg_label
+        return pred_score, pred_class
+
+
+def filter_correct(logits, targets, threshold, neg_label=-1):
+    """Returns the indices of correctly predicted known samples.
+
+    Args:
+        logits (tensor): Logits tensor
+        targets (tensor): Targets tensor
+        threshold (float): Minimum score for the target to be classified as known.
+        neg_label (int): Label reserved for negative samples.
+
+    Returns:
+        tuple: Contains in fist position a tensor with indices of correctly predicted samples.
+    """
+    with torch.no_grad():
+        scores = torch.nn.functional.softmax(logits, dim=1)
+        _, pred_class = predict(scores, threshold,  neg_label)
+        correct = (targets != neg_label) * (pred_class == targets)
+        return torch.nonzero(correct, as_tuple=True)
 
 
 def get_arrays(model, loader):
@@ -240,17 +351,17 @@ def worker(cfg):
         cfg (NameSpace): Configuration of the experiment
     """
     # referencing best score and setting seeds
-    set_seeds(cfg.seed)
+    # set_seeds(cfg.seed)
 
     BEST_SCORE = 0.0    # Best validation score
     START_EPOCH = 0     # Initial training epoch
 
     # Configure logger. Log only on first process. Validate only on first process.
-#    msg_format = "{time:DD_MM_HH:mm} {message}"
+    # msg_format = "{time:DD_MM_HH:mm} {message}"
     msg_format = "{time:DD_MM_HH:mm} {name} {level}: {message}"
     logger.configure(handlers=[{"sink": sys.stderr, "level": "INFO", "format": msg_format}])
     logger.add(
-        sink= cfg.output_directory / cfg.log_name,
+        sink=cfg.output_directory / cfg.log_name,
         format=msg_format,
         level="INFO",
         mode='w')
@@ -275,26 +386,30 @@ def worker(cfg):
         train_ds = ImagenetDataset(
             csv_file=train_file,
             imagenet_path=cfg.data.imagenet_path,
-            transform=train_tr
-        )
+            transform=train_tr)
+
         val_ds = ImagenetDataset(
             csv_file=val_file,
             imagenet_path=cfg.data.imagenet_path,
-            transform=val_tr
-        )
+            transform=val_tr)
+        initial_classes = train_ds.label_count
 
-        # If using garbage class, replaces label -1 to maximum label + 1
-        if cfg.loss.type == "garbage":
-            # Only change the unknown label of the training dataset
+        # Setting labels for every training case
+        if cfg.loss.type == 'softmax' or not cfg.adv.clean_neg:
+            train_ds.remove_negative_label()
+        elif cfg.loss.type == 'garbage':
             train_ds.replace_negative_label()
             val_ds.replace_negative_label()
-        elif cfg.loss.type == "softmax":
-            # remove the negative label from softmax training set, not from val set!
-            train_ds.remove_negative_label()
-
-
     else:
         raise FileNotFoundError("train/validation file does not exist")
+
+    # determine number of classes
+    if cfg.loss.type == "entropic":
+        # number of classes - 1 since entropic doesn't add new class for negative or unknown samples
+        n_classes = initial_classes - 1
+    else:
+        # num of classes when training with extra garbage class or when unknowns are removed
+        n_classes = initial_classes
 
     train_loader = DataLoader(
         train_ds,
@@ -326,15 +441,7 @@ def worker(cfg):
     t_metrics = defaultdict(AverageMeter)
     v_metrics = defaultdict(AverageMeter)
 
-    # set loss
-    loss = None
-    if cfg.loss.type == "entropic":
-        # number of classes - 1 since we have no label for unknown
-        n_classes = train_ds.label_count - 1
-    else:
-        # number of classes when training with extra garbage class for unknowns, or when unknowns are removed
-        n_classes = train_ds.label_count
-
+    # Setting loss
     if cfg.loss.type == "entropic":
         # We select entropic loss using the unknown class weights from the config file
         loss = EntropicOpensetLoss(n_classes, cfg.loss.w)
@@ -387,10 +494,7 @@ def worker(cfg):
         logger.info(f"Best score of loaded model: {BEST_SCORE:.3f}. 0 is for fine tuning")
         logger.info(f"Loaded {cfg.checkpoint} at epoch {START_EPOCH}")
 
-
     # Print info to console and setup summary writer
-
-    # Info on console
     logger.info("============ Data ============")
     logger.info(f"train_len:{len(train_ds)}, labels:{train_ds.label_count}")
     logger.info(f"val_len:{len(val_ds)}, labels:{val_ds.label_count}")
@@ -403,12 +507,49 @@ def worker(cfg):
     logger.info(f"Loss: {cfg.loss.type}")
     logger.info(f"optimizer: {cfg.opt.type}")
     logger.info(f"Learning rate: {cfg.opt.lr}")
-    logger.info(f"Device: {cfg.gpu}")
-    logger.info("Training...")
+    logger.info(f"Device: {vast.tools._device}")
+    logger.info("======== Perturbations ========")
+    logger.info(f"Perturbations: {cfg.adv.who}")
+    if cfg.adv.who in "fgsm, bernoulli":
+        logger.info(f"Epsilon: {cfg.adv.epsilon}")
+    if cfg.adv.who == "gaussian":
+        logger.info(f"Noise~N(0, {cfg.adv.std})")
+    if cfg.adv.who == "uniform":
+        logger.info(f"Noise~U[{cfg.adv.low}, {cfg.adv.high})")
+    if cfg.adv.who == "bernoulli":
+        logger.info(f"Noise~Bernoulli({cfg.adv.p})")
+    logger.info(f"Perturb. mode: {cfg.adv.mode}")
+    logger.info(f"Decay factor mu: {cfg.adv.mu}")
+    logger.info(f"Decay every {cfg.adv.decay} epochs")
+    logger.info(f"Include clean negatives: {cfg.adv.clean_neg}")
+    logger.info("======== Training ========")
     writer = SummaryWriter(log_dir=cfg.output_directory, filename_suffix="-"+cfg.log_name)
+
+    # Setup training with perturbations
+    start_epsilon = cfg.adv.epsilon
+    initial_who = cfg.adv.who
+    noise_gen = None
+    if initial_who == 'gaussian':
+        noise_gen = Noise(initial_who, loc=0, std=cfg.adv.std)
+    elif initial_who == 'bernoulli':
+        noise_gen = Noise(initial_who, prob=cfg.adv.p)
+    elif initial_who == 'uniform':
+        noise_gen = Noise(initial_who, low=cfg.adv.low, high=cfg.adv.high)
+
+    if cfg.adv.wait > 0:  # train without adv for a nr. of epochs then add adversarial samples.
+        cfg.adv.who = 'no_adv'
 
     for epoch in range(START_EPOCH, cfg.epochs):
         epoch_time = time.time()
+
+        # when to add perturbed samples
+        if (cfg.adv.wait > 0) and (epoch >= cfg.adv.wait):  # After wait epochs add pert. samples
+            cfg.adv.who = initial_who
+
+        # If using epsilon with decay
+        if (cfg.adv.who in ['fgsm', 'bernoulli']) and 0 < cfg.adv.mu < 1 and cfg.adv.decay > 0:
+            cfg.adv.epsilon = decay_epsilon(start_epsilon, cfg.adv.mu, epoch, cfg.adv.decay)
+            logger.info(f"current epsilon:{cfg.adv.epsilon}")
 
         # training loop
         train(
@@ -417,7 +558,8 @@ def worker(cfg):
             optimizer=opt,
             loss_fn=loss,
             trackers=t_metrics,
-            cfg=cfg)
+            cfg=cfg,
+            noise_gen=noise_gen)
 
         train_time = time.time() - epoch_time
 
@@ -437,8 +579,17 @@ def worker(cfg):
             scheduler.step()
 
         # Logging metrics to tensorboard object
-        writer.add_scalar("train/loss", t_metrics["j"].avg, epoch)
-        writer.add_scalar("val/loss", v_metrics["j"].avg, epoch)
+        if cfg.loss.type == 'entropic':
+            writer.add_scalar("train/loss_kn", t_metrics["j_kn"].avg, epoch)
+            writer.add_scalar("train/loss_neg", t_metrics["j_neg"].avg, epoch)
+            writer.add_scalar("val/loss_kn", v_metrics["j_kn"].avg, epoch)
+            writer.add_scalar("val/loss_neg", v_metrics["j_neg"].avg, epoch)
+        else:
+            writer.add_scalar("train/loss", t_metrics["j"].avg, epoch)
+            writer.add_scalar("val/loss", v_metrics["j"].avg, epoch)
+        if cfg.adv.who != 'no_adv':
+            writer.add_scalar('train/perturbed', t_metrics['j_pert'].avg, epoch)
+            writer.add_scalar('val/perturbed', v_metrics['j_pert'].avg, epoch)
         # Validation metrics
         writer.add_scalar("val/conf_kn", v_metrics["conf_kn"].avg, epoch)
         writer.add_scalar("val/conf_unk", v_metrics["conf_unk"].avg, epoch)
@@ -446,8 +597,8 @@ def worker(cfg):
         #  training information on console
         # validation+metrics writer+save model time
         val_time = time.time() - train_time - epoch_time
+
         def pretty_print(d):
-            #return ",".join(f'{k}: {float(v):1.3f}' for k,v in dict(d).items())
             return dict(d)
 
         logger.info(
