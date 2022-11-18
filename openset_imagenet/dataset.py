@@ -61,7 +61,7 @@ class ImagenetDataset(Dataset):
         """ Replaces negative label (-1) to biggest_label + 1. This is required if the loss function
         is softmax with garbage class. Updates the array of unique labels.
         """
-        # get the biggest label, which is the number of classes - 1 (since we have the -1 label inside)
+        # biggest label is the number of classes - 1 (since we have the -1 label inside)
         biggest_label = self.label_count - 1
         self.dataset[1].replace(-1, biggest_label, inplace=True)
         self.unique_classes[self.unique_classes == -1] = biggest_label
