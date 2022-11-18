@@ -2,18 +2,19 @@
 import numpy as np
 import sklearn.metrics
 import torch
-import torch.nn.functional as f  # It was torch.functional as f
+import torch.nn.functional as f
 
 
-def confidence(scores, target_labels, offset=0., unknown_class = -1, last_valid_class = None):
+def confidence(scores, target_labels, offset=0., unknown_class=-1, last_valid_class=None):
     """ Returns model's confidence, Taken from https://github.com/Vastlab/vast/tree/main/vast.
 
     Args:
         scores(tensor): Softmax scores of the samples.
         target_labels(tensor): Target label of the samples.
         offset(float): Confidence offset value, typically 1/number_of_classes.
-        unknown_class(int) which index to consider as unknown
-        last_valid_class(int or None) which classes to predict; can be None for all and -1 for BG approach
+        unknown_class(int): which index to consider as unknown
+        last_valid_class(int or None): which classes to predict.
+            It can be None for all and -1 for BG approach
 
     Returns:
         kn_conf: Confidence of known samples.
@@ -36,7 +37,7 @@ def confidence(scores, target_labels, offset=0., unknown_class = -1, last_valid_
             neg_conf = torch.sum(
                 1.0
                 + offset
-                - torch.max(scores[unknown,:last_valid_class], dim=1)[0]
+                - torch.max(scores[unknown, :last_valid_class], dim=1)[0]
             ).item() / neg_count
 
     return kn_conf, kn_count, neg_conf, neg_count
