@@ -19,6 +19,7 @@ batch_size: 64  # If distributed training the batch size is multiplied by the nu
 epochs: 120
 workers: 4      # Dataloader number of workers
 patience: 0     # Number of epochs to wait before stopping the training. 0 means no early stopping
+threshold: 0.5  # Samples with scores < threshold are classified as unknown
 
 loss:
   type: garbage  # either {entropic, softmax, garbage}
@@ -28,12 +29,31 @@ loss:
 algorithm:
   type: dnn
 
+# Generation of negative samples:
+adv:
+  who: no_adv       # Type of adversarial samples: {no_adv, gaussian, bernoulli, uniform, fgsm}
+  clean_neg: True   # True: Training uses protocol negatives and perturbed samples
+                    # False: Training uses only perturbed samples
+  wait: 0       # Number epochs to train only with known samples, before adding adversarial samples
+  mode: filter  # Selection of images to be perturbed {filter, full}
+  # Epsilon parameters, applies to {fgsm,bernoulli}:
+  epsilon: 0.0  # Magnitude of the initial perturbation.
+  decay: 0      # Number of epochs to wait for each epsilon reduction. 0 means no decay
+  mu: 1.0       # Factor to reduce epsilon every 'decay' number of epochs. 1 means no decay
+  # Only for gaussian noise:
+  std: 0.0      # Standard deviation of the perturbation, mean=0.
+  # Only for bernoulli noise:
+  p: 1.0        # Probability of perturbing a pixel.
+  # Only for uniform noise U~[low, high):
+  low: 1.0      # Lower value of interval
+  high: 1.0     # Upper bound of interval
+
 # Optimizer Parameters
 opt:
   type: adam  # Two options: {adam, sgd}
   lr: 1.e-3   # Initial learning rate
   decay: 0    # Number of epochs to wait for each learning rate reduction. 0 means no decay
-  gamma: 1    # Factor to reduce the learning rate
+  gamma: 1.    # Factor to reduce the learning rate
 
 # Parameters for Distributed Data Parallel training
 dist:
