@@ -59,7 +59,7 @@ class ImagenetDataset(Dataset):
 
     def replace_negative_label(self):
         """ Replaces negative label (-1) to biggest_label + 1. This is required if the loss function
-        is BGsoftmax. Updates the array of unique labels.
+        is softmax with garbage class. Updates the array of unique labels.
         """
         # get the biggest label, which is the number of classes - 1 (since we have the -1 label inside)
         biggest_label = self.label_count - 1
@@ -68,11 +68,11 @@ class ImagenetDataset(Dataset):
         self.unique_classes.sort()
 
     def remove_negative_label(self):
-        """ Removes all negative labels (<0) from the dataset. This is required for training with plain softmax"""
+        """ Removes all negative labels (<0) from the dataset. This is required for training with
+        plain softmax"""
         self.dataset.drop(self.dataset[self.dataset[1] < 0].index, inplace=True)
         self.unique_classes = np.sort(self.dataset[1].unique())
         self.label_count = len(self.dataset[1].unique())
-
 
     def calculate_class_weights(self):
         """ Calculates the class weights based on sample counts.
@@ -80,7 +80,6 @@ class ImagenetDataset(Dataset):
         Returns:
             class_weights: Tensor with weight for every class.
         """
-        # TODO: Should it be part of dataset class?
         counts = self.dataset.groupby(1).count().to_numpy()
         class_weights = (len(self.dataset) / (counts * self.label_count))
         return torch.from_numpy(class_weights).float().squeeze()
