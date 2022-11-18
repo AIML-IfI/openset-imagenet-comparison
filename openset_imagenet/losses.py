@@ -1,5 +1,4 @@
 """ Code taken from the vast library https://github.com/Vastlab/vast"""
-from torch.nn import functional as f
 import torch
 from vast import tools
 
@@ -29,7 +28,7 @@ class EntropicOpensetLoss:
         return self.cross_entropy(logits, categorical_targets)
 
 
-class AverageMeter():
+class AverageMeter:
     """ Computes and stores the average and current value. Taken from
     https://github.com/pytorch/examples/tree/master/imagenet
     """
