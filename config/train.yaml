@@ -1,7 +1,8 @@
 # General Parameters
 name: experiment
 checkpoint:             # Relative path to checkpoint
-log_name: training.log  # name of the file with training info
+#log_name: training_{}_{}_{}_{}.log  # name of the file with training info
+log_name: training.log
 train_mode: train       # either: {train, finetune}
 gpu:                    # index of a GPU, if available
 parallel: off           # run in parallel
@@ -16,12 +17,12 @@ data:
 # Common parameters
 seed: 42        # Common seed across all source of randomness
 batch_size: 32  # If distributed training the batch size is multiplied by the number of gpus
-epochs: 1
+epochs: 50
 workers: 4      # Dataloader number of workers
 patience: 0     # Number of epochs to wait before stopping the training. 0 means no early stopping
 
 loss:
-  type: softmax  # either {entropic, softmax, garbage}
+  type: garbage # either {entropic, softmax, garbage}
   # Entropic Parameters
   w: 1.
 
@@ -29,7 +30,7 @@ loss:
 
 # Optimizer Parameters
 opt:
-  type: adam  # Two options: {adam, sgd}
+  type: sgd  # Two options: {adam, sgd}
   lr: 1.e-3   # Initial learning rate
   decay: 0    # Number of epochs to wait for each learning rate reduction. 0 means no decay
   gamma: 1    # Factor to reduce the learning rate
@@ -53,24 +54,27 @@ train_classes: [kk]
 known_unknown_target: -1
 unknown_unknown_target: -2
 
-suffix: _best #or _cur
+suffix: _curr #or  _best
 
 algorithm:
-  type: evm #openmax evm threshold proser
-  base_model: experiments/Protocol_{}/softmax_best.pth #for those which use pretrained models
+  type: proser #openmax evm threshold proser
+  base_model: experiments/Protocol_{}/{}_curr.pth #for those which use pretrained models
 
   # Proser Parameters
-  lambda0: 0.1
+  lambda0: 0.1 #loss function coefficients/weights. 
   lambda1: 1.
   lambda2: 1.
-  alpha: 1.
-  dummy_count: 2
+  alpha: 1. #this for beta distribution Beta(alpha, alpha)
+  dummy_count: 1
 
   #openmax and evm parameters. alpha is changed to alpha_om not to mix with proser's alpha. 
-  tailsize: [1]
-  distance_multiplier: [1.5]
+  tailsize:  [10, 25, 50, 75, 100, 150, 200, 300, 500, 1000] #[10, 100, 250, 500, 750, 1000] #   
+  distance_multiplier: [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1.0] # [1.50, 1.7, 2.0, 2.3]       # 
   translateAmount: [1]
   distance_metric: cosine
-  alpha_om: [10]
+  alpha_om: [2, 3, 5, 10]
   cover_threshold: [1] # specific to evm
   chunk_size: 100 #specific to evm
+
+fpr_thresholds: [0.001, 0.01, 0.1, 0.15, 0.2]
+
