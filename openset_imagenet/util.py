@@ -161,7 +161,13 @@ COLORS = {
     "openmax": colors[8],
     "proser": colors[2],
     "evm": colors[3],
-    "maxlogits": colors[5]
+    "maxlogits": colors[5],
+
+    "none" : colors[0],
+    "batch": colors[8],
+    "layer": colors[3],
+    "instance": colors[5]
+
 }
 
 STYLES = {
@@ -170,7 +176,12 @@ STYLES = {
     "garbage": "dotted",
     "p1": "dashed",
     "p2": "dotted",
-    "p3": "solid"
+    "p3": "solid",
+
+    "none" : "solid",
+    "batch": "dashed",
+    "layer": "dotted",
+    "instance": "dashdot"
 }
 
 NAMES = {
@@ -182,6 +193,10 @@ NAMES = {
     "entropic": "EOS",
     "softmax": "Softmax",
     "garbage": "Garbage",
+    "none" : "No Norm",
+    "layer" : "LayerNorm",
+    "batch" : "BatchNorm",
+    "instance" : "InstanceNorm",
     "p1": "P_1",
     "p2": "P_2",
     "p3": "P_3",
@@ -226,14 +241,16 @@ def plot_single_oscr(fpr, ccr, ax, loss, algorithm, scale):
     return ax
 
 
-def plot_oscr(arrays, gt, scale='linear', title=None, ax_label_font=13, ax=None, unk_label=-1,):
+def plot_oscr(arrays, gt, algorithms, scale='linear', title=None, ax_label_font=13, ax=None, unk_label=-1,):
     """Plots OSCR curves for all given scores.
     The scores are stored as arrays: Float array of dim [N_samples, N_classes].
     The arrays contain scores for various loss functions and algorithms as arrays[loss][algorithm].
     """
 
     for loss, loss_arrays in arrays.items():
-        for algorithm, scores in loss_arrays.items():
+        for algorithm in algorithms:
+#        for algorithm, scores in loss_arrays.items():
+            scores = loss_arrays[algorithm]
             ccr, fpr = calculate_oscr(gt, scores, unk_label)
             ax = plot_single_oscr(fpr, ccr,
                               ax=ax,

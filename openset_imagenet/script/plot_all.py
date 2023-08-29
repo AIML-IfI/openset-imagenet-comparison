@@ -53,6 +53,13 @@ def command_line_options(command_line_arguments=None):
         help = "Which algorithm to include into the plot. Specific parameters should be in the yaml file"
     )
     parser.add_argument(
+      "--norms", "-n",
+      nargs = "+",
+      choices = ["none", 'batch', 'layer', 'instance'],
+      default = ["none", 'batch', 'layer', 'instance'],
+        help = "Which norms to include into the norm plot."
+    )
+    parser.add_argument(
         "--configuration", "-c",
         type = pathlib.Path,
         default = pathlib.Path("config/test.yaml"),
@@ -122,6 +129,27 @@ def load_scores(args, cfg):
                 else:
                     logger.warning(f"Did not find score file {score_file} for protocol {protocol}, {loss}, {algorithm}")
 
+            for norm in args.norms:
+                output_directory = pathlib.Path(cfg.output_directory) / f"Protocol_{protocol}" / norm
+                alg = "threshold"
+                scr = "scores"
+                score_file = output_directory / f"{loss}_{alg}_test_arr_{suffix}.npz"
+
+                if os.path.exists(score_file):
+                    # remember files
+                    results = numpy.load(score_file)
+
+                    scores[protocol][loss][norm] = results[scr]
+
+                    if protocol not in ground_truths:
+                        ground_truths[protocol] = results["gt"].astype(int)
+                    else:
+                        assert numpy.all(results["gt"] == ground_truths[protocol])
+
+                    logger.info(f"Loaded score file {score_file} for protocol {protocol}, {loss}, {norm}")
+                else:
+                    logger.warning(f"Did not find score file {score_file} for protocol {protocol}, {loss}, {norm}")
+
     return scores, ground_truths
 
 
@@ -135,9 +163,9 @@ def plot_OSCR(args, scores, ground_truths):
     font = 15
 
     for index, protocol in enumerate(args.protocols):
-        openset_imagenet.util.plot_oscr(arrays=scores[protocol], gt=ground_truths[protocol], scale="semilog", title=f'$P_{protocol}$ Negative',
+        openset_imagenet.util.plot_oscr(scores[protocol], ground_truths[protocol], args.algorithms, scale="semilog", title=f'$P_{protocol}$ Negative',
                     ax_label_font=font, ax=axs[2*index], unk_label=-1,)
-        openset_imagenet.util.plot_oscr(arrays=scores[protocol], gt=ground_truths[protocol], scale="semilog", title=f'$P_{protocol}$ Unknown',
+        openset_imagenet.util.plot_oscr(scores[protocol], ground_truths[protocol], args.algorithms, scale="semilog", title=f'$P_{protocol}$ Unknown',
                     ax_label_font=font, ax=axs[2*index+1], unk_label=-2,)
     # Axis properties
     for ax in axs:
@@ -155,6 +183,38 @@ def plot_OSCR(args, scores, ground_truths):
         bbox_to_anchor=(0.5,-0.03), handletextpad=0.6, columnspacing=1.5,
         title="How to Read: Line Style -> Loss; Color -> Algorithm"
     )
+
+def compare_norms(args, scores, ground_truths):
+    # plot OSCR
+    P = len(args.protocols)
+    fig = pyplot.figure(figsize=(8,3*P))
+    gs = fig.add_gridspec(P, 2, hspace=0.25, wspace=0.1)
+    axs = gs.subplots(sharex=True, sharey=True)
+    axs = axs.flat
+    font = 15
+
+    for index, protocol in enumerate(args.protocols):
+        openset_imagenet.util.plot_oscr(scores[protocol], ground_truths[protocol], args.norms, scale="semilog", title=f'$P_{protocol}$ Negative',
+                    ax_label_font=font, ax=axs[2*index], unk_label=-1,)
+        openset_imagenet.util.plot_oscr(scores[protocol], ground_truths[protocol], args.norms, scale="semilog", title=f'$P_{protocol}$ Unknown',
+                    ax_label_font=font, ax=axs[2*index+1], unk_label=-2,)
+    # Axis properties
+    for ax in axs:
+        ax.label_outer()
+        ax.grid(axis='x', linestyle=':', linewidth=1, color='gainsboro')
+        ax.grid(axis='y', linestyle=':', linewidth=1, color='gainsboro')
+
+    # Figure labels
+    fig.text(0.5, 0.06, 'FPR', ha='center', fontsize=font)
+    fig.text(0.04, 0.5, 'CCR', va='center', rotation='vertical', fontsize=font)
+
+    # add legend
+    openset_imagenet.util.oscr_legend(
+        args.losses, args.norms, fig,
+        bbox_to_anchor=(0.5,-0.03), handletextpad=0.6, columnspacing=1.5,
+        title="How to Read: Line Style -> Loss; Color -> Norm"
+    )
+
 
 
 from openset_imagenet.util import NAMES
@@ -312,8 +372,10 @@ def main(command_line_arguments = None):
     try:
         # plot OSCR (actually not required for best case)
         print("Plotting OSCR curves")
-        plot_OSCR(args, scores, ground_truths)
+#        plot_OSCR(args, scores, ground_truths)
+        compare_norms(args, scores, ground_truths)
         pdf.savefig(bbox_inches='tight', pad_inches = 0)
+
 
         """
         if not args.linear and not args.use_best and not args.sort_by_loss:
@@ -325,7 +387,7 @@ def main(command_line_arguments = None):
 
         # plot histograms
         print("Plotting score distribution histograms")
-        plot_score_distributions(args, scores, ground_truths, pdf)
+#        plot_score_distributions(args, scores, ground_truths, pdf)
     finally:
         pdf.close()
 

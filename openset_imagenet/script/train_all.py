@@ -46,6 +46,14 @@ def command_line_options(command_line_arguments=None):
       choices = ('threshold', 'evm', 'openmax', 'proser'),
       default = ('threshold', 'evm', 'openmax', 'proser')
     )
+
+    parser.add_argument(
+      "--norms", "-n",
+      nargs = "+",
+      choices = ("none", 'batch', 'layer', 'instance'),
+      default = "none"
+    )
+
     parser.add_argument(
         "--output-directory", "-o",
         type=pathlib.Path,
@@ -82,34 +90,36 @@ def commands(args):
     for loss_function in args.loss_functions:
       # make sure that the base model has been trained
       for algorithm in args.algorithms:
-        # load base config file
-        config = openset_imagenet.util.load_yaml(pathlib.Path(args.configuration_directory) / (algorithm + ".yaml"))
-        outdir = os.path.join(args.output_directory, f"Protocol_{protocol}")
-        # modify config file
-        config.loss.type = loss_function
-        config.name = loss_function
-        config.parallel = args.parallel
-        config.log_name = loss_function + "_" + algorithm + ".log"
-        config.output_directory = outdir
-        config.protocol = protocol
-        # check to continue
-        if args.continue_training:
-          checkpoint_file = config.algorithm.output_model_path.format(config.output_directory, config.loss.type, config.algorithm.type, config.epochs, config.algorithm.dummy_counts[0], "curr") if algorithm == "proser" else config.model_path.format(outdir, loss_function, algorithm, "curr")
-          if os.path.exists(checkpoint_file):
-            config.checkpoint = checkpoint_file
+        for norm in args.norms:
+          # load base config file
+          config = openset_imagenet.util.load_yaml(pathlib.Path(args.configuration_directory) / (algorithm + ".yaml"))
+          outdir = os.path.join(args.output_directory, f"Protocol_{protocol}", norm)
+          # modify config file
+          config.loss.type = loss_function
+          config.name = loss_function
+          config.parallel = args.parallel
+          config.log_name = loss_function + "_" + algorithm + ".log"
+          config.output_directory = outdir
+          config.protocol = protocol
+          config.model_norm = norm if norm != "none" else None
+          # check to continue
+          if args.continue_training:
+            checkpoint_file = config.algorithm.output_model_path.format(config.output_directory, config.loss.type, config.algorithm.type, config.epochs, config.algorithm.dummy_counts[0], "curr") if algorithm == "proser" else config.model_path.format(outdir, loss_function, algorithm, "curr")
+            if os.path.exists(checkpoint_file):
+              config.checkpoint = checkpoint_file
 
-        # write config file
-        config_file = os.path.join(outdir, loss_function + "_" + algorithm + ".yaml")
-        os.makedirs(outdir, exist_ok=True)
-        open(config_file, "w").write(config.dump())
+          # write config file
+          config_file = os.path.join(outdir, loss_function + "_" + algorithm + ".yaml")
+          os.makedirs(outdir, exist_ok=True)
+          open(config_file, "w").write(config.dump())
 
-        call = ["train_imagenet.py", config_file, str(protocol), "--nice", str(args.nice)]
-        if args.gpus is not None:
-          call += ["--gpu", str(args.gpus[gpu])]
-          processes[gpu].append(call)
-          gpu = (gpu + 1) % gpus
-        else:
-          processes[0].append(call)
+          call = ["train_imagenet.py", config_file, str(protocol), "--nice", str(args.nice)]
+          if args.gpus is not None:
+            call += ["--gpu", str(args.gpus[gpu])]
+            processes[gpu].append(call)
+            gpu = (gpu + 1) % gpus
+          else:
+            processes[0].append(call)
 
   return processes
 

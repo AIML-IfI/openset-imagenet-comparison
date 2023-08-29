@@ -42,6 +42,13 @@ def command_line_options(command_line_arguments=None):
     )
 
     parser.add_argument(
+      "--norms", "-n",
+      nargs = "+",
+      choices = ["none", 'batch', 'layer', 'instance'],
+      default = ["none", 'batch', 'layer', 'instance']
+    )
+
+    parser.add_argument(
         "--configuration", "-c",
         type = Path,
         default = Path("config/test.yaml"),
@@ -95,14 +102,15 @@ def dataset(cfg, protocol):
     return test_dataset, test_loader
 
 
-def load_model(cfg, loss, algorithm, protocol, suffix, output_directory, n_classes):
+def load_model(cfg, loss, algorithm, norm, protocol, suffix, output_directory, n_classes):
     if algorithm == 'proser':
         opt = cfg.optimized[algorithm]
         popt = opt[f"p{protocol}"][loss]
         base = openset_imagenet.ResNet50(
             fc_layer_dim=n_classes,
             out_features=n_classes,
-            logit_bias=False)
+            logit_bias=False,
+            norm = norm)
 
         model = openset_imagenet.model.ResNet50Proser(
             dummy_count = popt.dummy_count,
@@ -115,7 +123,8 @@ def load_model(cfg, loss, algorithm, protocol, suffix, output_directory, n_class
         model = openset_imagenet.ResNet50(
             fc_layer_dim=n_classes,
             out_features=n_classes,
-            logit_bias=False)
+            logit_bias=False,
+            norm = norm)
 
         model_path = cfg.model_path.format(output_directory, loss, "threshold", suffix)
 
@@ -186,8 +195,8 @@ def load_scores(loss, algorithm, suffix, output_directory):
         return None
 
 
-def process_model(protocol, loss, algorithms, cfg, suffix, gpu, force):
-    output_directory = Path(cfg.output_directory)/f"Protocol_{protocol}"
+def process_model(protocol, loss, norm, algorithms, cfg, suffix, gpu, force):
+    output_directory = Path(cfg.output_directory)/f"Protocol_{protocol}"/norm
 
     # set device
     if gpu is not None:
@@ -208,9 +217,9 @@ def process_model(protocol, loss, algorithms, cfg, suffix, gpu, force):
     if any(a!="proser" for a in algorithms):
         base_data = None if force else load_scores(loss, "threshold", suffix, output_directory)
         if base_data is None:
-            logger.info(f"Loading base model for protocol {protocol}, {loss}")
+            logger.info(f"Loading base model for protocol {protocol}, {loss}, {norm}")
             # load base model
-            base_model = load_model(cfg, loss, "threshold", protocol, suffix, output_directory, n_classes)
+            base_model = load_model(cfg, loss, "threshold", norm, protocol, suffix, output_directory, n_classes)
             if base_model is not None:
                 # extract features
                 logger.info(f"Extracting base scores for protocol {protocol}, {loss}")
@@ -262,7 +271,8 @@ def main(command_line_arguments = None):
 
     for protocol in args.protocols:
         for loss in args.losses:
-            process_model(protocol, loss, args.algorithms, cfg, suffix, args.gpu, args.force)
+            for norm in args.norms:
+                process_model(protocol, loss, norm, args.algorithms, cfg, suffix, args.gpu, args.force)
 
 if __name__=='__main__':
     main()

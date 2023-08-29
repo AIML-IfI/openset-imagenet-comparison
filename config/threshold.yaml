@@ -6,6 +6,7 @@ output_directory: experiments  # the directory where to write the model file
 parallel: false
 
 model_path: "{}/{}_{}_{}.pth" #for those which use pretrained models
+model_norm: None
 
 # Data Parameters
 data:

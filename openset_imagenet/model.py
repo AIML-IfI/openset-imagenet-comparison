@@ -11,7 +11,7 @@ import vast
 class ResNet50(nn.Module):
     """Represents a ResNet50 model"""
 
-    def __init__(self, fc_layer_dim=1000, out_features=1000, logit_bias=True):
+    def __init__(self, fc_layer_dim=1000, out_features=1000, logit_bias=True, norm=None):
         """ Builds a ResNet model, with deep features and logits layers.
 
         Args:
@@ -34,6 +34,15 @@ class ResNet50(nn.Module):
             out_features=out_features,
             bias=logit_bias)
 
+        self.norm = {
+            "batch" : torch.nn.BatchNorm1d(fc_layer_dim),
+            "layer" : torch.nn.LazyBatchNorm1d(),
+            "instance" : torch.nn.InstanceNorm1d(fc_layer_dim),
+            "relu" : torch.nn.ReLU(),
+            "none" : torch.nn.Identity(),
+            None : torch.nn.Identity()
+        }[norm]
+
 
 
     def forward(self, image):
@@ -46,7 +55,10 @@ class ResNet50(nn.Module):
             Logits and deep features of the samples.
         """
         features = self.resnet_base(image)
-        logits = self.logits(features)
+        # apply norm on features
+        normalized = self.norm(features)
+        # compute logits through normalized features
+        logits = self.logits(normalized)
         return logits, features
 
 

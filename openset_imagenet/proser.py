@@ -343,7 +343,8 @@ def worker(cfg, dummy_count_index=0):
     base = ResNet50(
         fc_layer_dim=n_classes,
         out_features=n_classes,
-        logit_bias=False
+        logit_bias=False,
+        norm = cfg.model_norm if hasattr(cfg, "model_norm") else None
     )
     model = ResNet50Proser(
         dummy_count = cfg.algorithm.dummy_count,

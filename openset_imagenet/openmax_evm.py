@@ -352,7 +352,8 @@ def worker(cfg):
     # Create the model
     model = ResNet50(fc_layer_dim=n_classes,
                      out_features=n_classes,
-                     logit_bias=False)
+                     logit_bias=False,
+                     norm = cfg.model_norm if hasattr(cfg, "model_norm") else None)
     device(model)
 
     # load checkpoint

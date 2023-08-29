@@ -37,11 +37,11 @@ def train(model, data_loader, optimizer, loss_fn, trackers, cfg):
 
     j = None
 
+    model.train()  # To collect batch-norm statistics
     # training loop
     if not cfg.parallel:
         data_loader = tqdm.tqdm(data_loader)
     for images, labels in data_loader:
-        model.train()  # To collect batch-norm statistics
         batch_len = labels.shape[0]  # Samples in current batch
         optimizer.zero_grad()
         images = device(images)
@@ -278,7 +278,8 @@ def worker(cfg):
     # Create the model
     model = ResNet50(fc_layer_dim=n_classes,
                      out_features=n_classes,
-                     logit_bias=False)
+                     logit_bias=False,
+                     norm=cfg.model_norm)
     device(model)
 
     # Create optimizer
@@ -374,6 +375,7 @@ def worker(cfg):
         logger.info(
             f"loss:{cfg.loss.type} "
             f"protocol:{cfg.protocol} "
+            f"norm: {cfg.model_norm} "
             f"ep:{epoch} "
             f"train:{pretty_print(t_metrics)} "
             f"val:{pretty_print(v_metrics)} "
